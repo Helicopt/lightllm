@@ -58,30 +58,28 @@ def main(rank: int = 0):
             if cmd == 'clear':
                 chat = InfohubConversation(LLM, conv_id=dialogId)
                 chat.new_conv(dialogId)
+                logger.info(
+                    f'Clearing session {dialogId}: now number of seqs = {len(chat.conv)}')
                 if 'system' in msg:
                     chat.set_system_msg(msg['system'])
-                conn = db._connect()
-                cursor = conn.cursor()
-                c = cursor.get_container_client('llm')
-                all_logs = list(c.query_items(
-                    query='SELECT * FROM c',
-                    partition_key=dialogId,
-                ))
-                for log in all_logs:
-                    c.delete_item(log, partition_key=dialogId)
-                conn.close()
                 continue
             continue
         seq = msg['seq']
         content = msg['content']
         ask = content
         chat = InfohubConversation(LLM, conv_id=dialogId)
-        if 'system' in msg:
-            chat.set_system_msg(msg['system'])
         logger.info('create cosmos log')
         conn = db._connect()
         cursor = conn.cursor()
         c = cursor.get_container_client('llm')
+        if 'system' in msg:
+            chat.set_system_msg(msg['system'])
+            c.upsert_item({
+                'id': dialogId + '-0',
+                'DialogId': dialogId,
+                'system': chat.conv[0]['content']
+            })
+            seq += 1
         c.upsert_item({
             'id': dialogId + '-' + str(seq),
             'DialogId': dialogId,

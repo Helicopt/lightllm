@@ -1,5 +1,6 @@
 import requests
 import json
+from loguru import logger
 import pickle
 import uuid
 import os
@@ -64,7 +65,9 @@ class InfohubConversation:
             self.ask()
         self.conv.append(self.user_message(message))
         self.save_conv()
-        self.ask()
+        ret = self.ask()
+        if ret:
+            return
         if sync:
             self.sync()
 
@@ -73,13 +76,20 @@ class InfohubConversation:
         params = {}
         params.update(self.llm)
         params.pop('url')
+        content_length = 0
+        for one in self.conv:
+            content_length += len(one['content'])
+        logger.info(f'context content length: {content_length}')
         ret = requests.post(url, json={
             "messages": [{'role': one['role'], 'content': one['content']} for one in self.conv], ** params
         })
+        if ret.status_code != 200:
+            return False
         sess = ret.json()
         self.conv.append(self.assistant_message(
             sess['choices'][0]['message']['content'], origin=sess))
         self.save_conv()
+        return True
 
     def sync(self):
         print(self.playback())
