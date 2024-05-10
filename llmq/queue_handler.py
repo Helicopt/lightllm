@@ -5,6 +5,9 @@ from multiprocessing import Process
 import json
 import sys
 import traceback
+import signal
+import sys
+
 
 from env import EXEC_TYPE, NUM_WORKERS, SRV_NAME, MQ_TYPE, MQ_CONNSTR, NON_CONSUMER, MQ_CHECKPOINT, MQ_CHECKPOINT_CONTAINER, DBS_CERTIFICATE_CONNECT_STRING, DBS_CERTIFICATE_DB_NAME, LLM
 from msgq import get_mq
@@ -53,46 +56,41 @@ def main(rank: int = 0):
             msg = mq.receive(blocking=True)
             msg = json.loads(msg)
         dialogId = msg['DialogId']
+        chat = InfohubConversation(LLM, conv_id=dialogId)
         if 'cmd' in msg:
             cmd = msg['cmd']
             if cmd == 'clear':
-                chat = InfohubConversation(LLM, conv_id=dialogId)
                 chat.new_conv(dialogId)
                 logger.info(
                     f'Clearing session {dialogId}: now number of seqs = {len(chat.conv)}')
-                if 'system' in msg:
-                    chat.set_system_msg(msg['system'])
-                continue
+            if cmd == 'set_mode':
+                pass
+            if 'system' in msg:
+                logger.info("Setting system message")
+                chat.set_system_msg(msg['system'])
             continue
         seq = msg['seq']
-        content = msg['content']
-        ask = content
-        chat = InfohubConversation(LLM, conv_id=dialogId)
+        user_content = msg['content']
+        ask = msg.get('preliminary', '') + user_content
         logger.info('create cosmos log')
         conn = db._connect()
         cursor = conn.cursor()
         c = cursor.get_container_client('llm')
-        if 'system' in msg:
-            chat.set_system_msg(msg['system'])
-            c.upsert_item({
-                'id': dialogId + '-0',
-                'DialogId': dialogId,
-                'system': chat.conv[0]['content']
-            })
-            seq += 1
         c.upsert_item({
             'id': dialogId + '-' + str(seq),
             'DialogId': dialogId,
-            'ask': ask,
+            'prelim': msg.get('preliminary', ''),
+            'ask': user_content,
             'answer': '',
         })
-        chat.push(content)
+        chat.push(ask)
         content = chat.last_answer()
         logger.info('write back cosmos log')
         c.upsert_item({
             'id': dialogId + '-' + str(seq),
             'DialogId': dialogId,
-            'ask': ask,
+            'prelim': msg.get('preliminary', ''),
+            'ask': user_content,
             'answer': content,
         })
         conn.close()
@@ -103,5 +101,15 @@ bgps = []
 for i in range(NUM_WORKERS):
     bgps.append(Process(target=main, args=(i, )))
     bgps[-1].start()
+
+
+def signal_handler(sig, frame):
+    for i in bgps:
+        i.terminate()
+    logger.info('')
+    logger.info('SIGINT received, terminating all workers...')
+
+
+signal.signal(signal.SIGINT, signal_handler)
 
 # This file must not be run directly!!!!!!!!!!!!!!!!!!!!!!!!!!!!
